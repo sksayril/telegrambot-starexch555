@@ -1,0 +1,19 @@
+{
+  "name": "telegrambot-starexch555",
+  "version": "1.0.0",
+  "description": "Telegram bot for Starexch login approval and wallet balance",
+  "main": "bot.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node bot.js",
+    "bot": "node bot.js",
+    "login": "node login-and-balance.js",
+    "scrape": "node login-and-balance.js",
+    "postinstall": "npx puppeteer browsers install chrome"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "puppeteer": "^24.15.0",
+    "telegraf": "^4.16.3"
+  }
+}
