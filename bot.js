@@ -20,7 +20,12 @@ if (!ROOT_ADMIN_IDS.length) {
   console.warn("Warning: ADMIN_IDS is empty. Set at least one root admin Telegram ID in .env");
 }
 
-const bot = new Telegraf(BOT_TOKEN);
+// Wallet scrape can take 1–3 minutes on Ubuntu — default Telegraf timeout is 90s
+const HANDLER_TIMEOUT_MS = Number(process.env.HANDLER_TIMEOUT_MS || 300000); // 5 min
+
+const bot = new Telegraf(BOT_TOKEN, {
+  handlerTimeout: HANDLER_TIMEOUT_MS,
+});
 
 /** In-memory wizard: telegramId -> { step, username? } */
 const sessions = new Map();
@@ -803,9 +808,30 @@ bot.on("text", async (ctx, next) => {
   return next();
 });
 
-bot.catch((err, ctx) => {
+bot.catch(async (err, ctx) => {
   console.error("Bot error:", err);
-  ctx.reply("Something went wrong. Try again.").catch(() => {});
+  const msg = String(err?.message || err);
+  const isTimeout =
+    err?.name === "TimeoutError" ||
+    msg.includes("timed out") ||
+    msg.includes("Timeout");
+
+  try {
+    if (isTimeout) {
+      const tid = ctx?.from?.id ? String(ctx.from.id) : null;
+      if (tid) balanceLocks.delete(tid);
+      await ctx.reply(
+        `⏱️ *Request timed out*\n\n` +
+          `Wallet check took too long (server/network slow).\n` +
+          `Please try /wallet again in a minute.`,
+        { parse_mode: "Markdown", ...(ctx?.from ? mainMenu(ctx) : {}) }
+      );
+      return;
+    }
+    await ctx.reply("Something went wrong. Try again.");
+  } catch (_) {
+    /* ignore */
+  }
 });
 
 bot.launch().then(() => {
