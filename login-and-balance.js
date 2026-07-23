@@ -198,6 +198,14 @@ async function fillAndSubmitLogin(page, account, tag) {
   await page.type(passSelector, account.password, { delay: 30 });
 
   log(tag, `Credentials filled for: ${account.username}`);
+
+  // Common typo: .con instead of .com
+  if (/\.con$/i.test(String(account.username || "").trim())) {
+    throw new Error(
+      `Email looks wrong: "${account.username}" — did you mean ".com" instead of ".con"?`
+    );
+  }
+
   log(tag, "Clicking LOGIN button...");
 
   await page.waitForSelector("#loginbutton, button.action_btn", {
@@ -231,20 +239,39 @@ async function waitForDashboard(page, tag) {
   log(tag, "Waiting for dashboard / wallet balances...");
 
   const start = Date.now();
-  const timeout = Number(process.env.DASHBOARD_TIMEOUT_MS || 120000);
+  const timeout = Number(process.env.DASHBOARD_TIMEOUT_MS || 90000);
+  let loginFormStillOpenCount = 0;
 
   while (Date.now() - start < timeout) {
     try {
       if (page.isClosed()) throw new Error("Page was closed unexpectedly.");
 
       const ready = await page.evaluate(() => {
+        const visibleText = (el) => {
+          if (!el) return "";
+          const s = window.getComputedStyle(el);
+          if (!s || s.display === "none" || s.visibility === "hidden") return "";
+          return (el.textContent || "").trim();
+        };
+
         const errEls = Array.from(
-          document.querySelectorAll(".error_msg_nw, .otp_error, .login_error, .toast-error")
+          document.querySelectorAll(
+            ".error_msg_nw, .otp_error, .login_error, .toast-error, .swal2-html-container, .toast, .alert-danger"
+          )
         );
-        const visibleErr = errEls.find((e) => {
-          const s = window.getComputedStyle(e);
-          return s && s.display !== "none" && (e.textContent || "").trim();
-        });
+        for (const el of errEls) {
+          const t = visibleText(el);
+          if (t && /invalid|incorrect|wrong|failed|not found|error/i.test(t)) {
+            return { error: t };
+          }
+        }
+
+        const loginFormOpen = !!(
+          document.querySelector("#nwGuestSec") ||
+          document.querySelector(".login_popup_wrpr") ||
+          document.querySelector("#user_login_id") ||
+          document.querySelector("input.cls_login_username")
+        );
 
         const wallet = document.querySelector(
           ".total_balance, .hdrMyWlt .Balances__value___3Ht3w span, span.total_balance"
@@ -259,20 +286,26 @@ async function waitForDashboard(page, tag) {
           ".Balances__balances___1bDig, .cls-Balances__balances___1bDig, .cls_wal_pop, .expAvalHdrPar, [data-value='availablebalanceclick']"
         );
 
-        if (visibleErr) {
-          return { error: (visibleErr.textContent || "").trim() };
-        }
+        // Logged-in header usually hides guest Login/Join buttons
+        const guestLoginBtn = document.querySelector(
+          "a.cls_loginbtn, a.loginBtn, nav.authBtnTopbar a.mb-button--login"
+        );
+        const guestLoginVisible = !!(guestLoginBtn && visibleText(guestLoginBtn));
 
-        if (!balancesRoot && !wallet) {
-          return { balances: null };
+        if (balancesRoot || wallet) {
+          return {
+            balances: {
+              myWallet: (wallet?.textContent || "").trim(),
+              exposure: (exposure?.textContent || "").trim(),
+              available: (available?.textContent || "").trim(),
+            },
+          };
         }
 
         return {
-          balances: {
-            myWallet: (wallet?.textContent || "").trim(),
-            exposure: (exposure?.textContent || "").trim(),
-            available: (available?.textContent || "").trim(),
-          },
+          balances: null,
+          loginFormOpen,
+          guestLoginVisible,
         };
       });
 
@@ -284,8 +317,24 @@ async function waitForDashboard(page, tag) {
         await sleep(1500);
         return ready.balances;
       }
+
+      // If login popup/form still open for long → credentials likely wrong
+      if (ready?.loginFormOpen || ready?.guestLoginVisible) {
+        loginFormStillOpenCount += 1;
+      } else {
+        loginFormStillOpenCount = 0;
+      }
+
+      // ~12 seconds of login form still visible
+      if (loginFormStillOpenCount >= 15) {
+        throw new Error(
+          "Login did not succeed. Check username/email and password.\n" +
+            "Common mistake: .con instead of .com (example: name@gmail.com)"
+        );
+      }
     } catch (err) {
       if (String(err.message || err).startsWith("Login failed:")) throw err;
+      if (String(err.message || err).startsWith("Login did not succeed")) throw err;
       if (!String(err.message || err).includes("Execution context was destroyed")) {
         throw err;
       }
@@ -294,17 +343,22 @@ async function waitForDashboard(page, tag) {
     await sleep(800);
   }
 
-  // Debug dump for Ubuntu failures
   try {
     const url = page.url();
     const title = await page.title().catch(() => "");
     log(tag, `Timeout debug — url=${url} title=${title}`);
-    await page.screenshot({ path: path.join(__dirname, `error-dashboard-${tag}.png`), fullPage: true });
+    await page.screenshot({
+      path: path.join(__dirname, `error-dashboard-${tag}.png`),
+      fullPage: true,
+    });
   } catch (_) {
     /* ignore */
   }
 
-  throw new Error("Dashboard wallet balances did not appear after login.");
+  throw new Error(
+    "Dashboard wallet balances did not appear after login. " +
+      "Usually wrong email/password, or site blocked the login."
+  );
 }
 
 async function readBalances(page) {
