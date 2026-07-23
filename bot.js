@@ -835,10 +835,15 @@ bot.catch(async (err, ctx) => {
 });
 
 bot.launch().then(() => {
+  const { getOs, resolveChromePath } = require("./browser-launcher");
+  const chrome = resolveChromePath();
   console.log("Starexch Telegram bot is running.");
+  console.log("OS:", getOs());
+  console.log("Chrome:", chrome.executablePath || "NOT FOUND", `(${chrome.source})`);
   console.log("Root admins (.env):", ROOT_ADMIN_IDS.join(", ") || "(none)");
   console.log("Extra admins:", store.getExtraAdminIds().join(", ") || "(none)");
   console.log("Headless:", process.env.HEADLESS !== "false");
+  console.log("Handler timeout ms:", HANDLER_TIMEOUT_MS);
 });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));

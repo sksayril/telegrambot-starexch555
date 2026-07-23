@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const puppeteer = require("puppeteer");
 
 // Load .env when run directly or when CHROME_PATH etc. needed
 try {
@@ -9,10 +8,11 @@ try {
   /* optional */
 }
 
+const { createBrowser, getOs, resolveChromePath } = require("./browser-launcher");
+
 const SITE_URL = "https://starexch555.com/";
-// Default: headless background (no visible window). Set HEADLESS=false to show browser.
-const HEADLESS = process.env.HEADLESS !== "false";
 const CONCURRENCY = Math.max(1, Number(process.env.CONCURRENCY || 3));
+const HEADLESS = process.env.HEADLESS !== "false";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -310,131 +310,6 @@ async function readBalances(page) {
   });
 }
 
-function whichCmd(cmd) {
-  try {
-    const out = require("child_process")
-      .execSync(`command -v ${cmd} 2>/dev/null || which ${cmd} 2>/dev/null || true`, {
-        encoding: "utf8",
-        shell: "/bin/bash",
-      })
-      .trim()
-      .split("\n")[0];
-    return out && fs.existsSync(out) ? out : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-function resolveChromePath() {
-  if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
-    return process.env.CHROME_PATH;
-  }
-
-  // Prefer Puppeteer's downloaded Chrome (works best on Ubuntu)
-  try {
-    const bundled = puppeteer.executablePath();
-    if (bundled && fs.existsSync(bundled)) return bundled;
-  } catch (_) {
-    /* not installed yet */
-  }
-
-  // System Chrome / Chromium (Windows + Ubuntu/Linux + macOS)
-  const candidates = [
-    // Windows
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    path.join(process.env.LOCALAPPDATA || "", "Google\\Chrome\\Application\\chrome.exe"),
-    // Ubuntu / Debian Chrome
-    "/usr/bin/google-chrome-stable",
-    "/usr/bin/google-chrome",
-    "/opt/google/chrome/chrome",
-    // Ubuntu Chromium (apt)
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-    "/usr/lib/chromium-browser/chromium-browser",
-    "/usr/lib/chromium/chromium",
-    // Snap Chromium (often problematic, last resort)
-    "/snap/bin/chromium",
-    // macOS
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  ];
-
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
-  }
-
-  // PATH lookup on Linux
-  for (const cmd of [
-    "google-chrome-stable",
-    "google-chrome",
-    "chromium-browser",
-    "chromium",
-  ]) {
-    const found = whichCmd(cmd);
-    if (found) return found;
-  }
-
-  return undefined;
-}
-
-async function createBrowser() {
-  const executablePath = resolveChromePath();
-  if (!executablePath) {
-    throw new Error(
-      "Chrome/Chromium not found on this server.\n" +
-        "Ubuntu fix — run these commands:\n" +
-        "  npx puppeteer browsers install chrome\n" +
-        "  sudo apt-get update && sudo apt-get install -y \\\n" +
-        "    ca-certificates fonts-liberation libasound2t64 libatk-bridge2.0-0 \\\n" +
-        "    libatk1.0-0 libcups2 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0 \\\n" +
-        "    libnspr4 libnss3 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 \\\n" +
-        "    xdg-utils wget\n" +
-        "Or set CHROME_PATH=/usr/bin/google-chrome-stable in .env"
-    );
-  }
-
-  console.log(`[browser] Using Chrome: ${executablePath}`);
-
-  const isLinux = process.platform === "linux";
-  const isSnap = executablePath.includes("/snap/");
-
-  try {
-    return await puppeteer.launch({
-      executablePath,
-      headless: HEADLESS ? true : false,
-      defaultViewport: { width: 1366, height: 900 },
-      // Snap Chromium needs special handling
-      ignoreDefaultArgs: isSnap ? ["--disable-extensions"] : undefined,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage", // critical on Ubuntu/Docker (small /dev/shm)
-        "--disable-gpu",
-        "--disable-software-rasterizer",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-blink-features=AutomationControlled",
-        "--window-size=1366,900",
-        "--hide-scrollbars",
-        "--mute-audio",
-        ...(isLinux ? ["--disable-features=VizDisplayCompositor"] : []),
-        ...(isSnap ? ["--disable-gpu", "--single-process"] : []),
-      ],
-    });
-  } catch (err) {
-    const msg = String(err.message || err);
-    throw new Error(
-      `Failed to launch browser (${executablePath}).\n` +
-        `${msg}\n\n` +
-        `Ubuntu fix:\n` +
-        `1) npx puppeteer browsers install chrome\n` +
-        `2) bash scripts/ubuntu-chrome-deps.sh\n` +
-        `3) Or install Google Chrome and set CHROME_PATH in .env`
-    );
-  }
-}
-
 async function setupPage(browser) {
   const page = await browser.newPage();
   await page.setUserAgent(
@@ -521,6 +396,8 @@ async function processAccountsParallel(accounts, concurrency = CONCURRENCY) {
 
   console.log("========================================");
   console.log(`Multi-process run: ${list.length} account(s)`);
+  console.log(`OS              : ${getOs()}`);
+  console.log(`Chrome          : ${resolveChromePath().executablePath || "NOT FOUND"}`);
   console.log(`Concurrency     : ${concurrency}`);
   console.log(`Headless        : ${HEADLESS}`);
   console.log(`Target          : ${SITE_URL}`);
