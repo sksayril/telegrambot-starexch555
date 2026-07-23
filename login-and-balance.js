@@ -231,46 +231,77 @@ async function waitForDashboard(page, tag) {
   log(tag, "Waiting for dashboard / wallet balances...");
 
   const start = Date.now();
-  const timeout = 90000;
+  const timeout = Number(process.env.DASHBOARD_TIMEOUT_MS || 120000);
 
   while (Date.now() - start < timeout) {
     try {
       if (page.isClosed()) throw new Error("Page was closed unexpectedly.");
 
       const ready = await page.evaluate(() => {
+        const errEls = Array.from(
+          document.querySelectorAll(".error_msg_nw, .otp_error, .login_error, .toast-error")
+        );
+        const visibleErr = errEls.find((e) => {
+          const s = window.getComputedStyle(e);
+          return s && s.display !== "none" && (e.textContent || "").trim();
+        });
+
         const wallet = document.querySelector(
-          ".total_balance, .hdrMyWlt .Balances__value___3Ht3w span"
+          ".total_balance, .hdrMyWlt .Balances__value___3Ht3w span, span.total_balance"
         );
         const exposure = document.querySelector(
-          ".totalExposure, [data-value='exposurebalance'] span"
+          ".totalExposure, [data-value='exposurebalance'] span, span.totalExposure"
         );
         const available = document.querySelector(
-          ".wallet_balance, [data-value='availablebalance'] span, .availableBalance .Balances__value___3Ht3w span"
+          ".wallet_balance, [data-value='availablebalance'] span, .availableBalance .Balances__value___3Ht3w span, span.wallet_balance"
         );
         const balancesRoot = document.querySelector(
-          ".Balances__balances___1bDig, .cls-Balances__balances___1bDig, .cls_wal_pop, .expAvalHdrPar"
+          ".Balances__balances___1bDig, .cls-Balances__balances___1bDig, .cls_wal_pop, .expAvalHdrPar, [data-value='availablebalanceclick']"
         );
 
-        if (!balancesRoot && !wallet) return null;
+        if (visibleErr) {
+          return { error: (visibleErr.textContent || "").trim() };
+        }
+
+        if (!balancesRoot && !wallet) {
+          return { balances: null };
+        }
 
         return {
-          myWallet: (wallet?.textContent || "").trim(),
-          exposure: (exposure?.textContent || "").trim(),
-          available: (available?.textContent || "").trim(),
+          balances: {
+            myWallet: (wallet?.textContent || "").trim(),
+            exposure: (exposure?.textContent || "").trim(),
+            available: (available?.textContent || "").trim(),
+          },
         };
       });
 
-      if (ready && (ready.myWallet || ready.available || ready.exposure)) {
-        await sleep(1200);
-        return ready;
+      if (ready?.error) {
+        throw new Error(`Login failed: ${ready.error}`);
+      }
+
+      if (ready?.balances && (ready.balances.myWallet || ready.balances.available || ready.balances.exposure)) {
+        await sleep(1500);
+        return ready.balances;
       }
     } catch (err) {
+      if (String(err.message || err).startsWith("Login failed:")) throw err;
       if (!String(err.message || err).includes("Execution context was destroyed")) {
         throw err;
       }
     }
 
-    await sleep(700);
+    await sleep(800);
+  }
+
+  // Debug dump for Ubuntu failures
+  try {
+    const url = page.url();
+    const title = await page.title().catch(() => "");
+    log(tag, `Timeout debug — url=${url} title=${title}`);
+    await page.screenshot({ path: path.join(__dirname, `error-dashboard-${tag}.png`), fullPage: true });
+  } catch (_) {
+    /* ignore */
   }
 
   throw new Error("Dashboard wallet balances did not appear after login.");

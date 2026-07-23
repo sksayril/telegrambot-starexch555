@@ -1,10 +1,8 @@
 /**
  * OS-aware Chromium/Chrome launcher.
- * - Windows  → Windows Chrome paths + Windows-safe args
- * - Ubuntu/Linux → Chromium/Chrome paths + Linux-safe args
- * - macOS    → Chrome.app paths
- *
- * Override anytime with CHROME_PATH in .env
+ * - Windows  → Windows Chrome
+ * - Ubuntu   → System Google Chrome first (not Puppeteer cache)
+ * - Override → CHROME_PATH in .env
  */
 const fs = require("fs");
 const path = require("path");
@@ -12,6 +10,10 @@ const { execSync } = require("child_process");
 const puppeteer = require("puppeteer");
 
 const HEADLESS = process.env.HEADLESS !== "false";
+// On Linux, prefer real Google Chrome over Puppeteer download (default true)
+const PREFER_SYSTEM_CHROME =
+  process.env.PREFER_SYSTEM_CHROME !== "false" &&
+  (process.env.PREFER_SYSTEM_CHROME === "true" || process.platform === "linux");
 
 function getOs() {
   if (process.platform === "win32") return "windows";
@@ -44,7 +46,6 @@ function whichLinux(cmd) {
 
 function windowsChromeCandidates() {
   return [
-    process.env.CHROME_PATH,
     process.env.PROGRAMFILES
       ? path.join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe")
       : null,
@@ -56,7 +57,6 @@ function windowsChromeCandidates() {
       : null,
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    // Edge as last Windows fallback (Chromium-based)
     process.env.PROGRAMFILES
       ? path.join(process.env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe")
       : null,
@@ -66,7 +66,6 @@ function windowsChromeCandidates() {
 
 function linuxChromeCandidates() {
   return [
-    process.env.CHROME_PATH,
     "/usr/bin/google-chrome-stable",
     "/usr/bin/google-chrome",
     "/opt/google/chrome/chrome",
@@ -75,15 +74,14 @@ function linuxChromeCandidates() {
     "/usr/lib/chromium-browser/chromium-browser",
     "/usr/lib/chromium/chromium",
     "/snap/bin/chromium",
-  ].filter(Boolean);
+  ];
 }
 
 function macChromeCandidates() {
   return [
-    process.env.CHROME_PATH,
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  ].filter(Boolean);
+  ];
 }
 
 function getPuppeteerBundledChrome() {
@@ -95,24 +93,7 @@ function getPuppeteerBundledChrome() {
   }
 }
 
-/**
- * Resolve best Chrome/Chromium for current OS.
- * Order: CHROME_PATH → Puppeteer bundled → OS system browser
- */
-function resolveChromePath() {
-  const os = getOs();
-
-  // Explicit override always wins (any OS)
-  if (process.env.CHROME_PATH && fileExists(process.env.CHROME_PATH)) {
-    return { executablePath: process.env.CHROME_PATH, source: "env:CHROME_PATH", os };
-  }
-
-  // Puppeteer downloaded Chrome (best cross-platform)
-  const bundled = getPuppeteerBundledChrome();
-  if (bundled) {
-    return { executablePath: bundled, source: "puppeteer-bundled", os };
-  }
-
+function findSystemChrome(os) {
   let candidates = [];
   if (os === "windows") candidates = windowsChromeCandidates();
   else if (os === "linux") candidates = linuxChromeCandidates();
@@ -120,11 +101,10 @@ function resolveChromePath() {
 
   for (const candidate of candidates) {
     if (fileExists(candidate)) {
-      return { executablePath: candidate, source: "system", os };
+      return { executablePath: candidate, source: "system" };
     }
   }
 
-  // Linux PATH lookup
   if (os === "linux") {
     for (const cmd of [
       "google-chrome-stable",
@@ -133,9 +113,37 @@ function resolveChromePath() {
       "chromium",
     ]) {
       const found = whichLinux(cmd);
-      if (found) return { executablePath: found, source: `which:${cmd}`, os };
+      if (found) return { executablePath: found, source: `which:${cmd}` };
     }
   }
+
+  return null;
+}
+
+/**
+ * Resolve Chrome for current OS.
+ * Linux default: SYSTEM Google Chrome first, Puppeteer only as fallback.
+ */
+function resolveChromePath() {
+  const os = getOs();
+
+  if (process.env.CHROME_PATH && fileExists(process.env.CHROME_PATH)) {
+    return { executablePath: process.env.CHROME_PATH, source: "env:CHROME_PATH", os };
+  }
+
+  const system = findSystemChrome(os);
+  const bundled = getPuppeteerBundledChrome();
+
+  // Ubuntu/Linux: prefer installed Google Chrome (not puppeteer cache)
+  if (os === "linux" && PREFER_SYSTEM_CHROME) {
+    if (system) return { ...system, os };
+    if (bundled) return { executablePath: bundled, source: "puppeteer-bundled-fallback", os };
+    return { executablePath: null, source: "not-found", os };
+  }
+
+  // Windows/mac: puppeteer bundled OR system
+  if (bundled) return { executablePath: bundled, source: "puppeteer-bundled", os };
+  if (system) return { ...system, os };
 
   return { executablePath: null, source: "not-found", os };
 }
@@ -150,13 +158,9 @@ function buildLaunchArgs(os, executablePath) {
   ];
 
   if (os === "windows") {
-    return [
-      ...common,
-      ...(HEADLESS ? ["--disable-gpu", "--hide-scrollbars"] : []),
-    ];
+    return [...common, ...(HEADLESS ? ["--disable-gpu", "--hide-scrollbars"] : [])];
   }
 
-  // Ubuntu / Linux — sandbox + /dev/shm fixes are required
   if (os === "linux") {
     const isSnap = String(executablePath || "").includes("/snap/");
     return [
@@ -172,40 +176,33 @@ function buildLaunchArgs(os, executablePath) {
     ];
   }
 
-  // macOS
-  return [
-    ...common,
-    ...(HEADLESS ? ["--disable-gpu", "--hide-scrollbars"] : []),
-  ];
+  return [...common, ...(HEADLESS ? ["--disable-gpu", "--hide-scrollbars"] : [])];
 }
 
 function missingChromeHelp(os) {
-  if (os === "windows") {
-    return (
-      "Windows: Install Google Chrome, or run:\n" +
-      "  npx puppeteer browsers install chrome\n" +
-      "Or set CHROME_PATH=C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe"
-    );
-  }
   if (os === "linux") {
     return (
-      "Ubuntu/Linux: run:\n" +
-      "  npx puppeteer browsers install chrome\n" +
-      "  bash scripts/ubuntu-chrome-deps.sh\n" +
-      "Or set CHROME_PATH=/usr/bin/google-chrome-stable (or /usr/bin/chromium-browser)"
+      "Install Google Chrome on Ubuntu:\n" +
+      "  bash scripts/install-google-chrome-ubuntu.sh\n" +
+      "Or:\n" +
+      "  wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb\n" +
+      "  sudo apt install -y ./google-chrome-stable_current_amd64.deb\n" +
+      "Then set in .env:\n" +
+      "  CHROME_PATH=/usr/bin/google-chrome-stable\n" +
+      "  PREFER_SYSTEM_CHROME=true"
     );
   }
-  return "Install Chrome or run: npx puppeteer browsers install chrome";
+  if (os === "windows") {
+    return "Install Google Chrome, or set CHROME_PATH to chrome.exe";
+  }
+  return "Install Google Chrome";
 }
 
-/**
- * Launch Chromium correctly for the current OS (Windows / Ubuntu / macOS).
- */
 async function createBrowser() {
   const { executablePath, source, os } = resolveChromePath();
 
   if (!executablePath) {
-    throw new Error(`Chrome/Chromium not found on ${os}.\n${missingChromeHelp(os)}`);
+    throw new Error(`Chrome not found on ${os}.\n${missingChromeHelp(os)}`);
   }
 
   const isSnap = String(executablePath).includes("/snap/");

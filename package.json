@@ -11,7 +11,8 @@
     "scrape": "node login-and-balance.js",
     "check": "node scripts/check-setup.js",
     "postinstall": "npx puppeteer browsers install chrome",
-    "setup:ubuntu": "bash scripts/setup-ubuntu.sh"
+    "setup:ubuntu": "bash scripts/setup-ubuntu.sh",
+    "install:chrome": "bash scripts/install-google-chrome-ubuntu.sh"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
