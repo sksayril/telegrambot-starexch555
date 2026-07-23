@@ -9,7 +9,8 @@
     "bot": "node bot.js",
     "login": "node login-and-balance.js",
     "scrape": "node login-and-balance.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "postinstall": "npx puppeteer browsers install chrome",
+    "setup:ubuntu": "bash scripts/ubuntu-chrome-deps.sh"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

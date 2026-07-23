@@ -52,7 +52,7 @@ function statusLabel(status) {
 
 function userMenu() {
   return Markup.keyboard([
-    ["🔗 Link Account", "💰 Wallet"],
+    ["🔗 Link / Change ID", "💰 Wallet"],
     ["👤 My Status", "❓ Help"],
   ]).resize();
 }
@@ -63,7 +63,7 @@ function adminMenu() {
     ["❌ Rejected", "🚫 Blocked"],
     ["👥 All Users", "👑 Admins"],
     ["📊 Admin Panel", "➕ Add Admin"],
-    ["🔗 Link Account", "💰 Wallet"],
+    ["🔗 Link / Change ID", "💰 Wallet"],
     ["👤 My Status", "❓ Help"],
   ]).resize();
 }
@@ -114,13 +114,29 @@ bot.start(async (ctx) => {
   const role = isAdmin(ctx) ? "Admin" : "User";
 
   await ctx.reply(
-    `Welcome to *Starexch Wallet Bot*\n\n` +
+    `👋 Welcome to *Starexch Wallet Bot*\n\n` +
       `Role: *${role}*\n` +
-      (user ? `Status: ${statusLabel(user.status)}\n` : "Status: Not linked yet\n") +
+      (user
+        ? `Status: ${statusLabel(user.status)}\nCurrent login: \`${user.username}\`\n`
+        : `Status: Not linked yet\n`) +
       `\n` +
-      `1. Tap *Link Account* → send email/username + password\n` +
-      `2. Wait for admin approval\n` +
-      `3. Use /wallet to fetch balances`,
+      `📌 *How to link your account*\n\n` +
+      `*Step 1:* Tap 🔗 *Link / Change ID*\n\n` +
+      `*Step 2:* Send your Username / Email / Mobile\n` +
+      `Example:\n` +
+      `\`sannysayril123@gmail.com\`\n` +
+      `or\n` +
+      `\`myusername\`\n` +
+      `or\n` +
+      `\`9876543210\`\n\n` +
+      `*Step 3:* Bot will ask for password — send it next\n` +
+      `Example:\n` +
+      `\`Sksayril@123\`\n\n` +
+      `⚠️ Send username and password in *2 separate messages*\n` +
+      `(first username, then password)\n\n` +
+      `*Step 4:* Wait for admin approval *(one time only)*\n\n` +
+      `*Step 5:* After approval use /wallet\n` +
+      `You can change Starexch ID anytime — no re-approval needed.`,
     { parse_mode: "Markdown", ...mainMenu(ctx) }
   );
 });
@@ -198,14 +214,37 @@ async function startRegister(ctx) {
   }
 
   sessions.set(String(ctx.from.id), { step: "username" });
+
+  if (existing?.status === "approved") {
+    await ctx.reply(
+      `✅ Your Telegram ID is already *approved*.\n\n` +
+        `Current login: \`${existing.username}\`\n\n` +
+        `Send *new Username / Email / Mobile*:\n\n` +
+        `Example:\n` +
+        `\`test@gmail.com\`\n` +
+        `or \`myusername\`\n` +
+        `or \`9876543210\`\n\n` +
+        `Then bot will ask for password.\n` +
+        `No new admin approval needed.\n\n(or /cancel)`,
+      { parse_mode: "Markdown", ...Markup.removeKeyboard() }
+    );
+    return;
+  }
+
   await ctx.reply(
-    "Send your Starexch *Username / Email / Mobile*:\n\n(or /cancel)",
+    `Send your Starexch *Username / Email / Mobile*:\n\n` +
+      `Example:\n` +
+      `\`test@gmail.com\`\n` +
+      `or \`myusername\`\n` +
+      `or \`9876543210\`\n\n` +
+      `(or /cancel)`,
     { parse_mode: "Markdown", ...Markup.removeKeyboard() }
   );
 }
 
 bot.command("register", startRegister);
 bot.hears("🔗 Link Account", startRegister);
+bot.hears("🔗 Link / Change ID", startRegister);
 
 // ─── Wallet (approved only) ─────────────────────────────────
 
@@ -681,9 +720,14 @@ bot.on("text", async (ctx, next) => {
       return ctx.reply("Username/email too short. Try again:");
     }
     sessions.set(tid, { step: "password", username: text });
-    return ctx.reply("Now send your *Password*:\n\n(or /cancel)", {
-      parse_mode: "Markdown",
-    });
+    return ctx.reply(
+      `✅ Username saved: \`${text}\`\n\n` +
+        `Now send your *Password*:\n\n` +
+        `Example:\n` +
+        `\`Sksayril@123\`\n\n` +
+        `(or /cancel)`,
+      { parse_mode: "Markdown" }
+    );
   }
 
   if (session.step === "password") {
@@ -700,20 +744,52 @@ bot.on("text", async (ctx, next) => {
     const username = session.username;
     sessions.delete(tid);
 
+    // Once Telegram ID is approved, user can switch any Starexch ID without re-approval
+    const alreadyApproved = existing?.status === "approved";
+    const nextStatus = alreadyApproved
+      ? "approved"
+      : existing?.status === "blocked"
+        ? "blocked"
+        : "pending";
+
     const user = store.upsertUser(tid, {
       username,
       password: text,
-      status: "pending",
+      status: nextStatus,
       displayName: [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ") || null,
       telegramUsername: ctx.from.username || null,
       submittedAt: new Date().toISOString(),
+      ...(alreadyApproved
+        ? { lastCredentialChangeAt: new Date().toISOString() }
+        : {}),
     });
+
+    if (alreadyApproved) {
+      await ctx.reply(
+        `✅ *Starexch ID updated successfully!*\n\n` +
+          `New login: \`${username}\`\n` +
+          `Status: ✅ Approved (no new approval needed)\n\n` +
+          `You can check balance now with /wallet`,
+        { parse_mode: "Markdown", ...mainMenu(ctx) }
+      );
+
+      // Optional soft notify to admins (info only, no approve buttons)
+      await notifyAdmins(
+        `🔄 *Approved user switched Starexch ID*\n\n` +
+          `TG: \`${tid}\` @${user.telegramUsername || "n/a"}\n` +
+          `Old → New login: \`${existing.username}\` → \`${username}\`\n` +
+          `No approval required (already approved).`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
 
     await ctx.reply(
       `✅ Account linked and sent for *admin approval*.\n\n` +
         `Login: \`${username}\`\n` +
         `Status: ${statusLabel(user.status)}\n\n` +
-        `You can use /wallet only after admin approval.`,
+        `You can use /wallet only after admin approval.\n` +
+        `After one approval, you can change Starexch ID anytime without re-approval.`,
       { parse_mode: "Markdown", ...mainMenu(ctx) }
     );
 
