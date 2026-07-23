@@ -16,6 +16,16 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
+// Valid format: 123456789:AAH... (digits, one colon, then secret)
+if (!/^\d+:[A-Za-z0-9_-]+$/.test(BOT_TOKEN)) {
+  console.error(
+    "Invalid BOT_TOKEN format in .env.\n" +
+      "Correct example: 8563798473:AAHXGZijaUJo7HDeR7AaJLgPE9p36_TX7Eg\n" +
+      "Wrong example:   8563798473:8563798473:AAH...  (bot id duplicated)"
+  );
+  process.exit(1);
+}
+
 if (!ROOT_ADMIN_IDS.length) {
   console.warn("Warning: ADMIN_IDS is empty. Set at least one root admin Telegram ID in .env");
 }
